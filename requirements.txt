@@ -11,3 +11,7 @@ tensorflow==2.12.0
 opennsfw2==0.10.2
 protobuf==4.23.2
 tqdm==4.65.0
+piexif
+cupy-cuda11x
+lpips
+numba

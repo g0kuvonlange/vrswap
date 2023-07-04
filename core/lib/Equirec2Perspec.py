@@ -7,7 +7,6 @@ class Equirectangular:
     def __init__(self, img_name):
         self._img = cv2.imread(img_name, cv2.IMREAD_COLOR)
         [self._height, self._width, _] = self._img.shape
-        print(self._img.shape)
     
 
     def GetPerspective(self, FOV, THETA, PHI, height, width):
