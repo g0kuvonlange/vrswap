@@ -13,7 +13,7 @@ frames_folder = args.frames_folder
 threads = args.threads
 
 def launch_codeformer(input_folder, processes):
-    codeformer_command = f'python CodeFormer/inference_roop.py -i "{input_folder}" -o "{input_folder}/upscaled" -w 0.85 -s 1 --face_upsample --rewrite'
+    codeformer_command = f'python codeformer_inference_roop.py -i "{input_folder}" -o "{input_folder}/upscaled" -w 0.85 -s 1 --face_upsample --rewrite'
     print(codeformer_command)
     process = subprocess.Popen(codeformer_command, shell=True)
     processes.append(process)

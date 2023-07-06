@@ -1,3 +1,4 @@
+import sys
 import os
 import cv2
 import argparse
@@ -5,6 +6,7 @@ import glob
 import torch
 import shutil
 from torchvision.transforms.functional import normalize
+sys.path.append(r'CodeFormer')
 from basicsr.utils import imwrite, img2tensor, tensor2img
 from basicsr.utils.download_util import load_file_from_url
 from basicsr.utils.misc import gpu_is_available, get_device
