@@ -15,3 +15,14 @@ piexif
 cupy-cuda11x
 lpips
 numba
+#sphere_snap
+pillow
+basicsr>=1.4.2
+facexlib>=0.2.5
+lmdb
+pyyaml
+scipy
+tb-nightly
+torchvision
+yapf
+realesrgan

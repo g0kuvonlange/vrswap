@@ -7,3 +7,4 @@ GFPGAN
 CodeFormer
 *.pth
 *.onnx
+.aider*
