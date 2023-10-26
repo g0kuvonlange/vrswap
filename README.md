@@ -10,7 +10,6 @@ source venv/bin/activate
 pip install --upgrade pip
 pip install torch==2.0.1 torchaudio torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cu118
 pip install -r requirements.txt
-git clone https://github.com/sczhou/CodeFormer
 
 ```
 ### Windows
@@ -20,7 +19,6 @@ conda activate vrswap
 conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
 conda install -c conda-forge cupy
 pip install -r requirements.txt
-git clone https://github.com/sczhou/CodeFormer
 ```
 
 ## Notes
@@ -35,14 +33,13 @@ git clone https://github.com/sczhou/CodeFormer
 1. Convert your VR180 equirectangular video to a directory of frames using e.g. ffmpeg:
 	 `ffmpeg -i /path/to/VR/video.mp4 -pix_fmt yuvj444p  -qscale:v 1 /path/to/working/folder/%04d.jpg `
 
-2. Convert the VR180 frame into two perspective frames (one per eye) that crop on the face, and then swap the face (E2P + SWAP):
-	`python swap.py --frames_folder /path/to/working/folder --face /path/to/face/to/swap/into/frames.jpg --gpu`
+2. Convert the VR180 frame into two perspective frames (one per eye) that crop on the face:
+	`python vr-splitter.py --frames_folder /path/to/working/folder`
 
-3. (Optional) Upscale the cropped perspective face-swapped frames using codeformer
-	`python upscale.py --frames_folder /path/to/working/folder`
+3. Subdirectories are created under processing/ with different faces. First delete all frames that are invalid (misdetected). Then Use whatever tool you prefer to manipulate the images - either change them in-place, or write the new images to separate folders. When done, delete all frames that should not be merged back, as the next step will recursively traverse all folders under processing/ and will look for 0 or 1 matching image - more than 1 of the same is a fatal error.
 
-4. Reinsert the swapped (and upscaled) left and right perspective crops back into the equirectangular frames (P2E):
-	`python convert.py --frames_folder /path/to/working/folder`
+4. Reinsert the swapped (and upscaled) left and right perspective crops back into the equirectangular frames:
+	`python vr-merger.py --frames_folder /path/to/working/folder`
 	
 5. Encode the frames back to video (H265 recommended); note this is just an example, use the source video FPS etc:
 	`fmpeg -r 59.997 -i /path/to/working/folder/%04d.jpg -c:v libx265  -c:a aac -preset fast -crf 18 -vf scale=in_range=limited:out_range=full -pix_fmt yuvj420p -movflags faststart /path/to/output/video.mp4`
