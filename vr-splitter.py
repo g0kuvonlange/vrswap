@@ -46,9 +46,6 @@ def pre_check():
     if sys.version_info < (3, 9):
         logging.error('Python version is not supported - please upgrade to 3.9 or higher')
         sys.exit(1)
-    if not shutil.which('ffmpeg'):
-        logging.error('ffmpeg is not installed!')
-        sys.exit(1)
     #model_path = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'inswapper_128.onnx')
     #if not os.path.isfile(model_path):
     #    logging.error('File "inswapper_128.onnx" does not exist!')

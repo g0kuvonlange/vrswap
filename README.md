@@ -17,8 +17,8 @@ pip install -r requirements.txt
 conda create -n vrswap
 conda activate vrswap
 conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
-conda install -c conda-forge cupy
-pip install -r requirements.txt
+conda install -c conda-forge cupy cuda-version=11.8
+pip install -r requirements-win.txt
 ```
 
 ## Notes

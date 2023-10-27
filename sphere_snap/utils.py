@@ -1,5 +1,4 @@
 import numpy as npy
-import time
 from scipy.ndimage import map_coordinates
 from scipy.spatial.transform import Rotation as R
 from scipy import ndimage
@@ -128,7 +127,7 @@ def check_uv_in_bounds(uv, hw):
 def compute_focal_length_yx(fov, hw):
     """ Returns focal lenght given resolution and fov """
     if cupy_available:
-        hw = npy.array(to_cp(hw))
+        hw = npy.array(to_np(hw))
     else:
         hw = npy.array(hw)
     fov_vh = npy.array(fov[::-1])

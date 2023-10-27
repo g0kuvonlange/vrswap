@@ -1,4 +1,6 @@
-numpy==1.23.5
+--extra-index-url https://download.pytorch.org/whl/cu118
+
+numpy==1.24.3
 opencv-python==4.7.0.72
 onnx==1.14.0
 insightface==0.7.3
@@ -7,7 +9,7 @@ tk==0.1.0
 pillow==9.5.0
 torch==2.0.1
 onnxruntime-gpu==1.15.0
-tensorflow==2.12.0
+tensorflow==2.13.0
 opennsfw2==0.10.2
 protobuf==4.23.2
 tqdm==4.65.0
@@ -15,7 +17,6 @@ piexif
 cupy-cuda11x
 lpips
 numba
-#sphere_snap
 pillow
 basicsr>=1.4.2
 facexlib>=0.2.5
@@ -26,3 +27,5 @@ tb-nightly
 torchvision
 yapf
 realesrgan
+astropy
+pydantic
