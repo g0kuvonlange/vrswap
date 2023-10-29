@@ -184,7 +184,7 @@ def merge_frame_thread(frame_path, foo):
     combined_img = np.hstack((modified_frame['L'], modified_frame['R']))
 
     # Save the combined image
-    result = cv2.imwrite(output_folder + '/' + frame_name + '_combined.jpg', combined_img)
+    result = cv2.imwrite(output_folder + '/' + frame_name + '.jpg', combined_img)
 
     # update this frame to be done
     framedata['frames'][frame_name]['done'] = True
