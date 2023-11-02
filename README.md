@@ -31,7 +31,7 @@ pip install -r requirements-win.txt
 
 ## Usage
 1. Convert your VR180 equirectangular video to a directory of frames using e.g. ffmpeg:
-	 `ffmpeg -i /path/to/VR/video.mp4 -pix_fmt yuvj444p  -qscale:v 1 /path/to/working/folder/%04d.jpg `
+	 `ffmpeg -i /path/to/VR/video.mp4 -pix_fmt yuvj444p -qmin 1 -qscale:v 1 /path/to/working/folder/%04d.jpg `
 
 2. Convert the VR180 frame into two perspective frames (one per eye) that crop on the face:
 	`python vr-splitter.py --frames_folder /path/to/working/folder`
