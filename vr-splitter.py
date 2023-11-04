@@ -5,12 +5,10 @@ import glob
 import argparse
 import signal
 import sys
-import shutil
 import torch
 import time
 import core.globals
-#from core.swapper import get_face_swapper
-from core.analyser import get_face, get_faces, get_face_analyser
+from core.analyser import get_faces, get_face_analyser
 from threading import Thread
 import threading
 import cv2
@@ -321,7 +319,7 @@ def store_frame_data():
 def process_frame_side(img, frame_name, output_dir, side):
     global framedata
 
-    faces = get_faces(img)  # Notice it's get_faces, assuming you're using a method that gets all faces.
+    faces = get_faces(det_thresh, img)  # Notice it's get_faces, assuming you're using a method that gets all faces.
 
     facecount = len(faces)
     logging.debug(f'FOUND {facecount} FACES')

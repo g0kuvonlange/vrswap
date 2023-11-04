@@ -4,7 +4,7 @@ import core.globals
 FACE_ANALYSER = None
 
 
-def get_face_analyser(det_thresh=0.5):
+def get_face_analyser(det_thresh):
     global FACE_ANALYSER
     if FACE_ANALYSER is None:
         FACE_ANALYSER = insightface.app.FaceAnalysis(name='buffalo_l', providers=core.globals.providers)
@@ -12,16 +12,16 @@ def get_face_analyser(det_thresh=0.5):
     return FACE_ANALYSER
 
 
-def get_face(img_data):
-    faces = get_face_analyser().get(img_data)
+def get_face(det_thresh,img_data):
+    faces = get_face_analyser(det_thresh).get(img_data)
     try:
         return sorted(faces, key=lambda x: x.bbox[0])[0]
     except IndexError:
         return None
 
 
-def get_faces(img_data):
-    faces = get_face_analyser().get(img_data)
+def get_faces(det_thresh,img_data):
+    faces = get_face_analyser(det_thresh).get(img_data)
     try:
         return sorted(faces, key=lambda x: x.bbox[0])
     except IndexError:
