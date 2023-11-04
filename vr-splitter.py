@@ -129,11 +129,11 @@ def process_frame_thread(frame_path, foo):
 
 def process_vr_frames(frame_paths):
 
-    global face_analyser, swap, rec, facelist, framedata, framedatafile_path, processing_path, continue_processing
+    global det_thresh, face_analyser, swap, rec, facelist, framedata, framedatafile_path, processing_path, continue_processing
     processing_path = os.path.dirname(frame_paths[0]) + "/processing"
     continue_processing = True
     # swap = get_face_swapper()
-    face_analyser = get_face_analyser()
+    face_analyser = get_face_analyser(det_thresh=det_thresh)
     # source_face = get_face(cv2.imread(source_img))
     rec = ArcFaceONNX('w600k_r50.onnx')
     rec.prepare(0)
@@ -400,14 +400,16 @@ if __name__ == '__main__':
     # Initialize argument parser
     parser = argparse.ArgumentParser()
     parser.add_argument("--frames_folder", help="Frames folder", required=True)
-    parser.add_argument("--similarity", help="Value between 0.0 (hardly the same)) and 1.0 (exactly the same) to group similar faces by", default=0.2, type=float)
+    parser.add_argument("--similarity", help="Value between 0.0 (hardly the same)) and 1.0 (exactly the same) to group similar faces by, default 0.2", default=0.2, type=float)
     parser.add_argument("--gpu_threads", help="Threads", default=10, type=int)
     parser.add_argument('--gpu', help='use gpu', dest='gpu', action='store_true', default=False)
+    parser.add_argument('--detection-threshold', help='Value between 0.0 (imprecise) to 1.0 (very precise) to detect a face, default 0.5', dest='det_thresh', default=0.5, type=float)
     args = parser.parse_args()
 
     framesFolder = args.frames_folder
     similarity = args.similarity
     gpuThreads = args.gpu_threads
+    det_thresh = args.det_thresh
 
     # Create a lock for thread-safe file writing
     lock = threading.Lock()
