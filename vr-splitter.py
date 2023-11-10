@@ -5,26 +5,30 @@ import glob
 import argparse
 import signal
 import sys
-import torch
-import time
-import core.globals
-from core.analyser import get_faces, get_face_analyser
 from threading import Thread
 import threading
+import time
+import logging
+import json
+import torch
 import cv2
 from tqdm import tqdm
 import numpy as np
+from scipy.spatial.transform import Rotation as R
+from numba import cuda
+import core.globals
+from core.analyser import get_faces, get_face_analyser
 import sphere_snap.utils as snap_utils
 import sphere_snap.sphere_coor_projections as sphere_proj
 from sphere_snap.snap_config import SnapConfig, ImageProjectionType
 from sphere_snap.sphere_snap import SphereSnap
-from scipy.spatial.transform import Rotation as R
-from numba import cuda
-import json
 from recognition.arcface_onnx import ArcFaceONNX
-import logging
 
-logging.basicConfig(level=logging.INFO)
+# set basic logging level
+logging.basicConfig(level=logging.INFO, force=True)
+
+# Add a global variable to count the number of times Ctrl+C is pressed
+ctrl_c_counter = 0
 
 try:
     from pydantic.utils import deep_update
@@ -44,10 +48,10 @@ def pre_check():
     if sys.version_info < (3, 9):
         logging.error('Python version is not supported - please upgrade to 3.9 or higher')
         sys.exit(1)
-    #model_path = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'inswapper_128.onnx')
-    #if not os.path.isfile(model_path):
-    #    logging.error('File "inswapper_128.onnx" does not exist!')
-    #    sys.exit(1)
+    model_path = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'w600k_r50.onnx')
+    if not os.path.isfile(model_path):
+        logging.error('File "w600k_r50.onnx" does not exist!')
+        sys.exit(1)
     if '--gpu' in sys.argv:
         NVIDIA_PROVIDERS = ['CUDAExecutionProvider', 'TensorrtExecutionProvider']
         if len(list(set(core.globals.providers) - set(NVIDIA_PROVIDERS))) == 1:
@@ -75,6 +79,7 @@ def pre_check():
 # Global list to keep track of all threads
 all_threads = []
 
+
 # creates a thread and returns value when joined
 class ThreadWithReturnValue(Thread):
 
@@ -88,8 +93,8 @@ class ThreadWithReturnValue(Thread):
             self._return = self._target(*self._args,
                                         **self._kwargs)
 
-    def join(self, *args):
-        Thread.join(self, *args)
+    def join(self, timeout=None):
+        Thread.join(self, timeout)
         return self._return
 
 
@@ -110,17 +115,8 @@ def process_frame_thread(frame_path, foo):
     output_folder = os.path.dirname(frame_path)                     # D:/test
     processing_folder = output_folder + "/processing"
 
-    results_l = process_frame_side(frame_l, frame_name, processing_folder, "L")
-    results_r = process_frame_side(frame_r, frame_name, processing_folder, "R")
-
-    logging.debug(results_l)
-    logging.debug(results_r)
-
-    # left = f"{processing_folder}/{frame_name}_L_0.jpg"
-    # right = f"{processing_folder}/{frame_name}_R_0.jpg"
-
-    # img1 = perform_face_swap(left, source_face)
-    # img2 = perform_face_swap(right, source_face)
+    process_frame_side(frame_l, frame_name, processing_folder, "L")
+    process_frame_side(frame_r, frame_name, processing_folder, "R")
 
     return yes_face, result
 
@@ -186,29 +182,56 @@ def process_vr_frames(frame_paths):
                 store_frame_data()
                 save_time = time.time()
 
-#def perform_face_swap(frame_path, source_face):
-#    face_exists = os.path.exists(frame_path)
-#
-#    if not face_exists:
-#        logging.debug("Face doesn't exist, skip")
-#        return
-#    else:
-#        logging.debug(f"Swapping {frame_path}")
-#
-#    frame = cv2.imread(frame_path)
-#
-#    target_faces = get_faces(frame)
-#    swapped_frame = frame
-#
-#    if target_faces:
-#        for target_face in target_faces:
-#            # Perform face swapping on the frame using source_face and target_face
-#            swapped_frame = swap.get(frame, target_face, source_face, paste_back=True)
-#            cv2.imwrite(frame_path, swapped_frame)
-#    else:
-#        logging.debug(f"No face in {frame_path}")
-#    return swapped_frame
-#
+
+def findFace(frame_name, input_img, side, phi, theta, output_dir):
+    # Convert equirectangular coordinates to spherical
+    height, width = input_img.shape[:2]
+    # Calculate the FOV based on the size of the bounding box
+    crop_width = width // 3  # Example crop width, adjust as needed
+    crop_height = height // 3  # Example crop height, adjust as needed
+    # make sure they're always multiples of 16
+    crop_width = (crop_width + 15) // 16 * 16
+    crop_height = (crop_height + 15) // 16 * 16
+    # and make sure it's smaller than the image itself
+    crop_width = min(crop_width, width)
+    crop_height = min(crop_height, height)
+    # Calculate the FOV based on the size of the bounding box
+    fov_x = (crop_width / width) * 180
+    fov_y = (crop_height / height) * 90
+    # get the largest of the 2 FOVs and lengths
+    crop_fov = max(fov_x, fov_y)
+    crop_length = max(crop_width, crop_height)
+    yaw = np.degrees(phi)
+    pitch = np.degrees(theta)
+    # Output dimensions
+    out_hw = (crop_length, crop_length)
+    rotation_quat = R.from_euler("yxz", [-yaw, pitch, 0], degrees=True).as_quat()
+    adjusted_fov = snap_utils.ensure_fov_res_consistency((crop_fov, crop_fov), (crop_length, crop_length))
+    snap_config = SnapConfig(
+        orientation_quat=rotation_quat,
+        out_hw=out_hw,
+        out_fov_deg=adjusted_fov,
+        source_img_hw=(height, width),
+        source_img_fov_deg=(180, 180),
+        source_img_type=ImageProjectionType.HALF_EQUI
+    )
+    sphere_snap_obj = SphereSnap(snap_config)
+    persp_img = sphere_snap_obj.snap_to_perspective(input_img)
+    # Now run get_faces on the perspective image with the detection threshold
+    detected_faces = get_faces(det_thresh, persp_img)
+    # If a face is detected, save the perspective image and update frame data
+    if detected_faces:
+        logging.debug(f"frame {frame_name} side {side} - detected face in upper center equirect image, saving")
+        output_path = os.path.join(output_dir, f'{frame_name}_{side}_0_0.jpg')
+        cv2.imwrite(output_path, persp_img)
+        # Assuming you want to update frame data for the first detected face
+        update_frame_data(frame_name, side, 0, 0, output_dir, theta, phi, crop_fov)  # Assuming you want the horizontal fov
+        return detected_faces
+    else:
+        logging.debug(f"frame {frame_name} side {side} - NO FACE DETECTED, neither with get_faces nor with persp image of upper center equirect")
+        return False
+
+
 def extractFace(frame_name, input_img, face, output_dir, side, frame_face_index, video_face_index):
     bbox = face.bbox
     x1, y1, x2, y2 = map(int, bbox)
@@ -283,6 +306,7 @@ def extractFace(frame_name, input_img, face, output_dir, side, frame_face_index,
     update_frame_data(frame_name, side, frame_face_index, video_face_index, output_dir, theta, phi, crop_fov)  # Assuming you want the horizontal fov
     return True
 
+
 def update_frame_data(frame_name, side, frame_face_index, video_face_index, output_dir, theta, phi, fov):
     global framedata, processing_path
 
@@ -295,13 +319,14 @@ def update_frame_data(frame_name, side, frame_face_index, video_face_index, outp
                           'phi': str(phi),
                           'fov': str(fov),
                           'video_face_index': str(video_face_index)
+                          }
                          }
                         }
                        }
                       }
-                     }
 
     framedata = deep_update(framedata, frame_metadata)
+
 
 def store_frame_data():
     global lock, framedatafile_path, framedata, facelist
@@ -322,7 +347,6 @@ def process_frame_side(img, frame_name, output_dir, side):
     faces = get_faces(det_thresh, img)  # Notice it's get_faces, assuming you're using a method that gets all faces.
 
     facecount = len(faces)
-    logging.debug(f'FOUND {facecount} FACES')
     for frame_face_index, face in enumerate(faces):
         if face and face.det_score > 0.55:
             # compare face to facelist to determine where to store
@@ -362,12 +386,47 @@ def process_frame_side(img, frame_name, output_dir, side):
 
             extract_dir = output_dir + '/' + 'face_' + str(video_face_index)
             extractFace(frame_name, img, face, extract_dir, side, frame_face_index, video_face_index)
-        elif face.det_score <= 0.55:
-            logging.debug(f"frame {frame_name} face {frame_face_index} gender {face.gender} score {face.det_score} SKIP - FACE DETECTION SCORE TOO LOW")
+        else:
+            # if we a here, a face was found but it did not meet the 0.55 threshold
+            logging.debug(f"frame {frame_name} FACE DETECTED BUT SCORE TOO LOW, RUNNING FACEFIND")
+            # Ensure the 'face_unknown' directory exists. use 'try:' to fix thread-unsafe problem
+            face_unknown_dir = os.path.join(output_dir, 'face_unknown')
+            if not os.path.exists(face_unknown_dir):
+                try:
+                    os.mkdir(face_unknown_dir)
+                except FileExistsError:
+                    True
+
+            # Set phi and theta to point down at a 45-degree angle to avoid the black area
+            phi = 0  # Center along the horizontal axis
+            theta = -np.pi / 3  # 45 degrees down from the vertical axis
+            # For 60 degrees, use: theta = -np.pi / 3
+            # For 90 degrees, use: theta = -np.pi / 2
+
+            # Call findFace with the new output directory and phi, theta values
+            findFace(frame_name, img, side, phi, theta, face_unknown_dir)
+
+    if facecount < 1:
+        # FACE DETECTOR DETECTED NO FACE WHATSOEVER
+        logging.debug(f"frame {frame_name} NO FACE DETECTED AT ALL, STILL RUNNING FACEFIND")
+        # Ensure the 'face_unknown' directory exists. use 'try:' to fix thread-unsafe problem
+        face_unknown_dir = os.path.join(output_dir, 'face_unknown')
+        if not os.path.exists(face_unknown_dir):
+            try:
+                os.mkdir(face_unknown_dir)
+            except FileExistsError:
+                True
+
+        # Set phi and theta to point down at a 45-degree angle to avoid the black area
+        phi = 0  # Center along the horizontal axis
+        theta = -np.pi / 3
+        # For 60 degrees, use: theta = -np.pi / 3
+        # For 90 degrees, use: theta = -np.pi / 2
+
+        # Call findFace with the new output directory and phi, theta values
+        findFace(frame_name, img, side, phi, theta, face_unknown_dir)
 
 
-# Add a global variable to count the number of times Ctrl+C is pressed
-ctrl_c_counter = 0
 
 def signal_handler(sig, frame):
     global continue_processing, all_threads, ctrl_c_counter

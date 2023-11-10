@@ -6,7 +6,7 @@ A quick and easy to use library for reprojecting various image types.
 from __future__ import absolute_import
 import logging
 import numpy as np
-logging.basicConfig(level=logging.INFO)
+# logging.basicConfig(level=logging.INFO)
 
 __version__ = "1.0.2"
 __author__ = 'Andrei Georgescu'
