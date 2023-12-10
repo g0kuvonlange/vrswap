@@ -17,7 +17,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 from numba import cuda
 import core.globals
-from core.analyser import get_faces, get_face_analyser
+from core.analyser import get_faces
 import sphere_snap.utils as snap_utils
 import sphere_snap.sphere_coor_projections as sphere_proj
 from sphere_snap.snap_config import SnapConfig, ImageProjectionType
@@ -123,14 +123,11 @@ def process_frame_thread(frame_path, foo):
 
 def process_vr_frames(frame_paths):
 
-    global det_thresh, face_analyser, swap, rec, facelist, framedata, framedatafile_path, processing_path, continue_processing
+    global vr_det_thresh, persp_det_thresh, recognizer, facelist, framedata, framedatafile_path, processing_path, continue_processing
     processing_path = os.path.dirname(frame_paths[0]) + "/processing"
     continue_processing = True
-    # swap = get_face_swapper()
-    face_analyser = get_face_analyser(det_thresh=det_thresh)
-    # source_face = get_face(cv2.imread(source_img))
-    rec = ArcFaceONNX('w600k_r50.onnx')
-    rec.prepare(0)
+    recognizer = ArcFaceONNX('w600k_r50.onnx')
+    recognizer.prepare(0)
     facelist = []
     framecount = 0
 
@@ -183,7 +180,7 @@ def process_vr_frames(frame_paths):
                 save_time = time.time()
 
 
-def findFace(frame_name, input_img, side, phi, theta, output_dir):
+def findFace(frame_name, input_img, side, phi, theta):
     # Convert equirectangular coordinates to spherical
     height, width = input_img.shape[:2]
     # Calculate the FOV based on the size of the bounding box
@@ -217,35 +214,41 @@ def findFace(frame_name, input_img, side, phi, theta, output_dir):
     )
     sphere_snap_obj = SphereSnap(snap_config)
     persp_img = sphere_snap_obj.snap_to_perspective(input_img)
-    # Now run get_faces on the perspective image with the detection threshold
-    detected_faces = get_faces(det_thresh, persp_img)
-    # If a face is detected, save the perspective image and update frame data
-    if detected_faces:
-        logging.debug(f"frame {frame_name} side {side} - detected face in upper center equirect image, saving")
-        output_path = os.path.join(output_dir, f'{frame_name}_{side}_0_0.jpg')
-        cv2.imwrite(output_path, persp_img)
-        # Assuming you want to update frame data for the first detected face
-        update_frame_data(frame_name, side, 0, 0, output_dir, theta, phi, crop_fov)  # Assuming you want the horizontal fov
-        return detected_faces
-    else:
-        logging.debug(f"frame {frame_name} side {side} - NO FACE DETECTED, neither with get_faces nor with persp image of upper center equirect")
-        return False
+    return persp_img, adjusted_fov
 
 
-def extractFace(frame_name, input_img, face, output_dir, side, frame_face_index, video_face_index):
+def extractFace(input_img, face, phi=None, theta=None, crop_fov=None):
+    height, width = input_img.shape[:2]
     bbox = face.bbox
     x1, y1, x2, y2 = map(int, bbox)
-    if x1 < 0 or x2 < 0 or y1 < 0 or y2 < 0:
-        logging.debug(f"frame {frame_name} side {side} face {face.index} gender {face.gender} age {face.age} score {face.det_score} bbox {face.bbox} x1 {x1} x2 {x2} y1 {y1} y2 {y2} - NEGATIVE BBOX")
-        return
+    if x1 < 0 or x2 > width or y1 < 0 or y2 > height:
+        # TODO: find out why this happens; maybe adjust for it (invert negative vale, add up to other value on same axis
+        logging.debug(f"NEGATIVE BBOX, ADJUSTING - x1 {x1} x2 {x2} y1 {y1} y2 {y2}")
+        if x1 < 0:
+            x2 = x2 + (x1 * -1)
+            x1 = 0
+        elif x2 > width:  # eg x2 = 2022, width= 2000
+            x1 = x1 - (x2 - width)
+            x2 = width
+        if y1 < 0:
+            y2 = y2 + (y1 * -1)
+            y1 = 0
+        elif y2 > height:  # eg y2 = 2022, height = 2000
+            y1 = y1 - (y2 - height)
+            y2 = height
+        if x1 < 0 or x2 > width or y1 < 0 or y2 > height:
+            logging.debug(f"NEGATIVE BBOX AFTER ADJUSTMENTS, CANNOT EXTRACT - x1 {x1} x2 {x2} y1 {y1} y2 {y2}")
+            return None, None, None, None
+        else:
+            logging.debug(f"NEGATIVE BBOX, ADJUSTED - x1 {x1} x2 {x2} y1 {y1} y2 {y2}")
 
     # Determine the center of the bounding box
     x_center = (x1 + x2) / 2
     y_center = (y1 + y2) / 2
 
     # Convert equirectangular coordinates to spherical
-    height, width = input_img.shape[:2]
-    phi, theta = sphere_proj.halfequi_coor2spherical(np.array([x_center, y_center]), (width, height))
+    if not phi or not theta:
+        phi, theta = sphere_proj.halfequi_coor2spherical(np.array([x_center, y_center]), (width, height))
 
     # use crop sizes at 200% of bounding box
     crop_width = (x2 - x1) * 2
@@ -279,7 +282,6 @@ def extractFace(frame_name, input_img, face, output_dir, side, frame_face_index,
 
     rotation_quat = R.from_euler("yxz", [-yaw, pitch, 0], degrees=True).as_quat()
     adjusted_fov = snap_utils.ensure_fov_res_consistency((crop_fov, crop_fov), (crop_length, crop_length))
-    logging.debug(f"frame {frame_name} side {side} face {face.index} gender {face.gender} age {face.age} score {face.det_score} frame_face {frame_face_index} bbox {face.bbox} x1 {x1} x2 {x2} y1 {y1} y2 {y2} yaw {yaw} pitch {pitch} phi {phi} theta {theta} h {height} w {width} crop fov {crop_fov} crop_length {crop_length} adjusted_fov {adjusted_fov}")
 
     snap_config = SnapConfig(
         orientation_quat=rotation_quat,
@@ -293,32 +295,22 @@ def extractFace(frame_name, input_img, face, output_dir, side, frame_face_index,
     sphere_snap_obj = SphereSnap(snap_config)
     persp_img = sphere_snap_obj.snap_to_perspective(input_img)
 
-    # Actually swap the iamge
-    # swapped_frame = swap.get(persp_img, face, source_face, paste_back=True)
-
-    output_path = os.path.join(output_dir, f'{frame_name}_{side}_{frame_face_index}_{video_face_index}.jpg')
-    cv2.imwrite(output_path, persp_img)
-
-    # bbox_crop_img = input_img[y1:y2, x1:x2]
-    # bbox_output_path = os.path.join(output_dir, f'{frame_name}_{side}_{frame_face_index}_bbox.jpg')
-    # cv2.imwrite(bbox_output_path, bbox_crop_img)
-
-    update_frame_data(frame_name, side, frame_face_index, video_face_index, output_dir, theta, phi, crop_fov)  # Assuming you want the horizontal fov
-    return True
+    return persp_img, theta, phi, adjusted_fov
 
 
-def update_frame_data(frame_name, side, frame_face_index, video_face_index, output_dir, theta, phi, fov):
+def update_frame_data(frame_name, side, vr_frame_face_index, persp_frame_face_index, output_dir, theta, phi, fov):
     global framedata, processing_path
 
     # add to global framedata dict
     frame_metadata = {'frames':
                       {f'{frame_name}':
                        {f'{side}':
-                        {f'{frame_face_index}':
-                         {'theta': str(theta),
-                          'phi': str(phi),
-                          'fov': str(fov),
-                          'video_face_index': str(video_face_index)
+                        {f'{vr_frame_face_index}':
+                         {f'{persp_frame_face_index}':
+                          {'theta': str(theta),
+                           'phi': str(phi),
+                           'fov': str(fov),
+                           }
                           }
                          }
                         }
@@ -341,91 +333,115 @@ def store_frame_data():
                 np.save(processing_path + "/_data_face_" + str(face[0]) + ".npy", face[1])
 
 
+def get_known_face_dir(face, output_dir):
+    global facelist, framedata, similarity
+
+    # For each face seen on a perspective frame, we check if we have seen it before
+    # this is done by comparing the embedding using a similarity comparison
+    # Each unique embedding gets a number, and each embedding is stored in a list in framedata
+    # The perspective frames are stored in subdirs suffixed with that number.
+
+    # if we already have one or more face embeddings in facelist, compare against them
+    for known_face in facelist:
+        sim = recognizer.compute_sim(known_face[1], face.embedding)
+        if sim >= similarity:
+            video_face_index = known_face[0]
+            logging.debug(f'Existing face detected {video_face_index} - sim {sim}')
+            face_dir = output_dir + '/' + 'face_' + str(video_face_index)
+            return face_dir
+
+    # If we are here, this is either the first face, or we have not seen this face before
+    video_face_index = len(facelist) + 1
+    logging.info(f'NEW face detected, creating subdir for video_face_index {video_face_index}')
+    # create the face index subdir
+    face_dir = output_dir + '/' + 'face_' + str(video_face_index)
+    # can be racy so wrap in try
+    if not os.path.exists(face_dir):
+        try:
+            os.mkdir(face_dir)
+        except FileExistsError:
+            True
+    # append index number to seen faces list
+    framedata['faces'].append(video_face_index)
+    # append index + embedding to facelist
+    facelist.append([video_face_index, face.embedding])
+    # TODO: should we really store data here? could be slowing us down
+    # store frame data
+    return face_dir
+
+
 def process_frame_side(img, frame_name, output_dir, side):
-    global framedata
+    global framedata, persp_det_thresh, vr_det_thresh
 
-    faces = get_faces(det_thresh, img)  # Notice it's get_faces, assuming you're using a method that gets all faces.
+    # Overall workflow per single-eye equirect image:
+    # 1. Run face detector on VR frame. Yields 0 or more faces depending on vr_det_thresh
+    # 2. For each found face, create a perspective image
+    # 3. On this perpective image, run get_face detection again. Yields 0 or more faces depending on persp_det_thresh
+    # 4. Compare each persp_face to the faces prevously seen in facelist. If known, allocate an index and store in same folder.
+    #    If unknown, store in new folder. Repeat for each face.
+    # 5. If no vr_faces were found, run a blind perspective frame extraction and goto 3.
+    #    Faces may not be detectable in extremely warped edges, so this a best-effort. TODO: improve this method.
 
-    facecount = len(faces)
-    for frame_face_index, face in enumerate(faces):
-        if face and face.det_score > 0.55:
-            # compare face to facelist to determine where to store
-            # TODO: store in json and load on resume
-            if len(facelist) < 1:
-                # first face to add.
-                logging.info('No faces seen yet, adding first face to facelist')
-                video_face_index = 1
-                facelist.append([1, face.embedding])
-                # create the face index subdir
-                face_dir = output_dir + '/' + 'face_' + str(video_face_index)
-                if not os.path.exists(face_dir):
-                    os.mkdir(face_dir)
-                # update framedata
-                framedata['faces'].append(video_face_index)
-                # store frame data
-                store_frame_data()
-            else:
-                known = False
-                for known_face in facelist:
-                    sim = rec.compute_sim(known_face[1], face.embedding)
-                    if sim >= similarity:
-                        video_face_index = known_face[0]
-                        known = True
-                        logging.debug(f'Existing face detected {video_face_index} - sim {sim}')
-                if not known:
-                    video_face_index = len(facelist) + 1
-                    logging.info(f'NEW face detected, creating subdir for video_face_index {video_face_index}')
-                    # create the face index subdir
-                    face_dir = output_dir + '/' + 'face_' + str(video_face_index)
-                    if not os.path.exists(face_dir):
-                        os.mkdir(face_dir)
-                    framedata['faces'].append(video_face_index)
-                    facelist.append([video_face_index, face.embedding])
-                    # store frame data
-                    store_frame_data()
+    vr_faces = get_faces(vr_det_thresh, img)  # Notice it's get_faces, assuming you're using a method that gets all faces.
 
-            extract_dir = output_dir + '/' + 'face_' + str(video_face_index)
-            extractFace(frame_name, img, face, extract_dir, side, frame_face_index, video_face_index)
-        else:
-            # if we a here, a face was found but it did not meet the 0.55 threshold
-            logging.debug(f"frame {frame_name} FACE DETECTED BUT SCORE TOO LOW, RUNNING FACEFIND")
-            # Ensure the 'face_unknown' directory exists. use 'try:' to fix thread-unsafe problem
-            face_unknown_dir = os.path.join(output_dir, 'face_unknown')
-            if not os.path.exists(face_unknown_dir):
-                try:
-                    os.mkdir(face_unknown_dir)
-                except FileExistsError:
-                    True
+    vr_facecount = len(vr_faces)
+    for vr_frame_face_index, vr_face in enumerate(vr_faces):
 
-            # Set phi and theta to point down at a 45-degree angle to avoid the black area
-            phi = 0  # Center along the horizontal axis
-            theta = -np.pi / 3  # 45 degrees down from the vertical axis
-            # For 60 degrees, use: theta = -np.pi / 3
-            # For 90 degrees, use: theta = -np.pi / 2
+        # Fetch the perspective for this face in this side of the frame
+        persp_img, theta, phi, crop_fov = extractFace(img, vr_face)
+        if not theta:
+            continue
 
-            # Call findFace with the new output directory and phi, theta values
-            findFace(frame_name, img, side, phi, theta, face_unknown_dir)
+        # now we have to rerun face detection because the VR frame might have yielded not-a-face
+        persp_faces = get_faces(persp_det_thresh, persp_img)
+        persp_facecount = len(persp_faces)
 
-    if facecount < 1:
-        # FACE DETECTOR DETECTED NO FACE WHATSOEVER
-        logging.debug(f"frame {frame_name} NO FACE DETECTED AT ALL, STILL RUNNING FACEFIND")
-        # Ensure the 'face_unknown' directory exists. use 'try:' to fix thread-unsafe problem
-        face_unknown_dir = os.path.join(output_dir, 'face_unknown')
-        if not os.path.exists(face_unknown_dir):
-            try:
-                os.mkdir(face_unknown_dir)
-            except FileExistsError:
-                True
+        # hopefully we have just one face here.
+        for persp_frame_face_index, persp_face in enumerate(persp_faces):
+            face_dir = get_known_face_dir(persp_face, output_dir)
+            # File naming scheme broken down:
+            # frame_name: the original video frame numbering filename
+            # side: eye, either L or R
+            # vr_frame_face_index: a numbered list of faces detected on one side of a VR frame
+            # persp_frame_face_index: a numbered list of faces detected on a perspective frame, based on the location of a detected face on the VR frame.
+            persp_image_output_path = os.path.join(face_dir, f'{frame_name}_{side}_{vr_frame_face_index}_{persp_frame_face_index}.jpg')
+            cv2.imwrite(persp_image_output_path, persp_img)
 
+            update_frame_data(frame_name, side, vr_frame_face_index, persp_frame_face_index, output_dir, theta, phi, crop_fov)  # Assuming you want the horizontal fov
+
+        if persp_facecount < 1:
+            logging.debug(f"frame {frame_name} VR FACE DETECTED BUT PERSP FACE NOT FOUND")
+
+    if vr_facecount < 1:
+        # FACE DETECTOR DETECTED NO FACE WHATSOEVER ON VR FRAME
+        logging.debug(f"frame {frame_name} NO VR FACE DETECTED AT ALL, STILL RUNNING FACEFIND")
         # Set phi and theta to point down at a 45-degree angle to avoid the black area
         phi = 0  # Center along the horizontal axis
         theta = -np.pi / 3
         # For 60 degrees, use: theta = -np.pi / 3
         # For 90 degrees, use: theta = -np.pi / 2
 
-        # Call findFace with the new output directory and phi, theta values
-        findFace(frame_name, img, side, phi, theta, face_unknown_dir)
+        # Call findFace with the manually set phi and theta values
+        persp_img, crop_fov = findFace(frame_name, img, side, phi, theta)
 
+        persp_faces = get_faces(persp_det_thresh, persp_img)
+        persp_facecount = len(persp_faces)
+
+        # We set an arbitrary vr_frame_face_index, e.g. 99
+        vr_frame_face_index = 99
+
+        # hopefully we have just one face here.
+        for persp_frame_face_index, persp_face in enumerate(persp_faces):
+            face_dir = get_known_face_dir(persp_face, output_dir)
+            # File naming scheme broken down:
+            # frame_name: the original video frame numbering filename
+            # side: eye, either L or R
+            # vr_frame_face_index: a numbered list of faces detected on one side of a VR frame
+            # persp_frame_face_index: a numbered list of faces detected on a perspective frame, based on the location of a detected face on the VR frame.
+            persp_image_output_path = os.path.join(face_dir, f'{frame_name}_{side}_{vr_frame_face_index}_{persp_frame_face_index}.jpg')
+            cv2.imwrite(persp_image_output_path, persp_img)
+
+            update_frame_data(frame_name, side, vr_frame_face_index, persp_frame_face_index, output_dir, theta, phi, crop_fov)  # Assuming you want the horizontal fov
 
 
 def signal_handler(sig, frame):
@@ -457,16 +473,18 @@ if __name__ == '__main__':
     # Initialize argument parser
     parser = argparse.ArgumentParser()
     parser.add_argument("--frames_folder", help="Frames folder", required=True)
-    parser.add_argument("--similarity", help="Value between 0.0 (hardly the same)) and 1.0 (exactly the same) to group similar faces by, default 0.2", default=0.2, type=float)
+    parser.add_argument("--similarity", help="Value between 0.0 (hardly the same)) and 1.0 (exactly the same) to group similar faces by, default 0.15", default=0.15, type=float)
     parser.add_argument("--gpu_threads", help="Threads", default=10, type=int)
     parser.add_argument('--gpu', help='use gpu', dest='gpu', action='store_true', default=False)
-    parser.add_argument('--detection-threshold', help='Value between 0.0 (imprecise) to 1.0 (very precise) to detect a face, default 0.5', dest='det_thresh', default=0.5, type=float)
+    parser.add_argument('--vr-detection-threshold', help='Value between 0.0 (imprecise) to 1.0 (very precise) to detect a face on the warped VR image, default 0.3. WARNING: re-running with altered values can result in mismapped frames when merging!', dest='vr_det_thresh', default=0.3, type=float)
+    parser.add_argument('--detection-threshold', help='Value between 0.0 (imprecise) to 1.0 (very precise) to detect a face on the normalized perspective image, default 0.55. WARNING: re-running with altered values can result in mismapped frames when merging!', dest='persp_det_thresh', default=0.55, type=float)
     args = parser.parse_args()
 
     framesFolder = args.frames_folder
     similarity = args.similarity
     gpuThreads = args.gpu_threads
-    det_thresh = args.det_thresh
+    vr_det_thresh = args.vr_det_thresh
+    persp_det_thresh = args.persp_det_thresh
 
     # Create a lock for thread-safe file writing
     lock = threading.Lock()

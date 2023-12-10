@@ -1,10 +1,11 @@
+#!/usr/bin/env python
+# pylint: disable=E501
 import time
 import os
 import cv2
 import sys
 import signal
 import numpy as np
-import cupy as cp
 import argparse
 import threading
 import re
@@ -23,7 +24,7 @@ from tqdm import tqdm
 from threading import Thread
 import logging
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, force=True)
 
 try:
     from pydantic.utils import deep_update
@@ -55,7 +56,7 @@ def merge_frame_thread(frame_path, foo):
 
     # Check again to make sure we have this frame in framedata; if not, something went wrong
     if frame_name not in framedata['frames']:
-        logging.error(f'Frame {frame_name} missing in framedata - should not have been queued')
+        logging.debug(f'Frame {frame_name} missing in framedata - should not have been queued')
         return False
 
     # next, if already done, skip it
@@ -98,51 +99,51 @@ def merge_frame_thread(frame_path, foo):
         snapimages = []
         snapimagemasks = []
 
-        for face, facedata in framedata['frames'][frame_name][side].items():
-            # ensure we have a path for this face, or we just skip
-            if 'path' not in facedata:
-                logging.warning(f'Frame {frame_name} side {side} face {face} has no file path, skipping')
-                continue
-            # convert each perspective image back to a hequirect one using a spheresnap and the image phi, theta and dimensions
-            # NOTE: faces are list not by index, but by face number. So face can be 1,2, or can be 2 or 2,4,8 etc.
+        for vrface, vrdata in framedata['frames'][frame_name][side].items():
+            for face, facedata in vrdata.items():
+                logging.debug(f'Frame {frame_name} vrface {vrface} vrdata {vrdata} face {face} facedata {facedata}')
+                # ensure we have a path for this face, or we just skip
+                if 'path' not in facedata:
+                    logging.debug(f'Frame {frame_name} side {side} face {face} has no file path, skipping')
+                    continue
+                # convert each perspective image back to a hequirect one using a spheresnap and the image phi, theta and dimensions
+                # NOTE: faces are list not by index, but by face number. So face can be 1,2, or can be 2 or 2,4,8 etc.
 
-            phi = float(facedata['phi'])
-            theta = float(facedata['theta'])
-            crop_fov = float(facedata['fov'])
-            fov = (crop_fov, crop_fov)
-            # TODO: float32?
-            logging.debug(f'Frame {frame_name} face {face} phi {phi} theta {theta} fov {fov}')
-            yaw = np.degrees(float(facedata['phi']))
-            pitch = np.degrees(float(facedata['theta']))
+                # TODO: float32?
+                phi = float(facedata['phi'])
+                theta = float(facedata['theta'])
+                fov = eval(facedata['fov'])
+                yaw = np.degrees(phi)
+                pitch = np.degrees(theta)
 
-            # define the rotation quat
-            rotation_quat = R.from_euler("yxz", [-yaw, pitch, 0], degrees=True).as_quat()
+                # define the rotation quat
+                rotation_quat = R.from_euler("yxz", [-yaw, pitch, 0], degrees=True).as_quat()
 
-            # read the image and append to images, but as float32 or spheresnap might fail
-            image = cv2.imread(facedata['path'], cv2.IMREAD_COLOR)
+                # read the image and append to images, but as float32 or spheresnap might fail
+                image = cv2.imread(facedata['path'], cv2.IMREAD_COLOR)
 
-            # set up the snap config for the perspective image
-            perspective_image_config = SnapConfig(
-                orientation_quat=rotation_quat,
-                out_hw=image.shape[:2],
-                out_fov_deg=fov,
-                source_img_hw=(vr_height, half_width),
-                source_img_fov_deg=(180, 180),
-                source_img_type=ImageProjectionType.HALF_EQUI
-            )
+                # set up the snap config for the perspective image
+                perspective_image_config = SnapConfig(
+                    orientation_quat=rotation_quat,
+                    out_hw=image.shape[:2],
+                    out_fov_deg=fov,
+                    source_img_hw=(vr_height, half_width),
+                    source_img_fov_deg=(180, 180),
+                    source_img_type=ImageProjectionType.HALF_EQUI
+                )
 
-            perspective_image_snap = SphereSnap(perspective_image_config)
+                perspective_image_snap = SphereSnap(perspective_image_config)
 
-            # append the spheresnap to the snaps list
-            snaps.append(perspective_image_snap)
+                # append the spheresnap to the snaps list
+                snaps.append(perspective_image_snap)
 
-            # apped the image to snapimages as float32
-            snapimages.append(np.float32(image))
+                # apped the image to snapimages as float32
+                snapimages.append(np.float32(image))
 
-            # create a mask with all pixels set to 1
-            mask = np.ones_like(image)
+                # create a mask with all pixels set to 1
+                mask = np.ones_like(image)
 
-            snapimagemasks.append(mask)
+                snapimagemasks.append(mask)
 
         # ensure we have work - if len(snaps) < 1, skip.
         if len(snaps) > 0 and len(snapimages) > 0:
@@ -234,21 +235,6 @@ def process_split_frames(framedata, frames):
             save_time = time.time()
 
 
-def loadInfo(frame_number, output_dir, side):
-    data_file = os.path.join(output_dir, '_data.json')
-
-    with open(data_file, 'r') as f:
-        data = json.load(f)
-
-    if frame_number in data:
-        theta = float(data[frame_number][f'theta{side}0'])
-        phi = float(data[frame_number][f'phi{side}0'])
-        fov = float(data[frame_number][f'fov{side}0'])
-        return theta, phi, fov
-    else:
-        raise ValueError(f"Frame number {frame_number} not found in {data_file}")
-
-
 def store_frame_data():
     global lock, framedatafile_path, framedata
 
@@ -269,14 +255,20 @@ def signal_handler(sig, frame):
     store_frame_data()
     if ctrl_c_counter > 1:
         print('Force quitting...')
+        for thread in all_threads:
+            try:
+                # Terminate the thread
+                thread._stop()
+            except Exception:
+                pass
         sys.exit(0)
     else:
         print('Gracefully exiting...')
         continue_processing = False
         # Wait for all threads to complete
         for thread in all_threads:
-            thread.join()
-        print('Writing data..')
+            while thread.is_alive():
+                thread.join(timeout=1)
         store_frame_data()
         sys.exit(0)
 
@@ -327,15 +319,17 @@ if __name__ == '__main__':
         pattern = r'(\d+)_(\w+)_(\d+)_(\d+)\.jpg'
         match = re.match(pattern, jpg.name)
         if match:
-            frame_name, frame_side, frame_face_index, video_face_index = match.groups()
-            if frame_name in framedata['frames'] and frame_side in framedata['frames'][frame_name] and frame_face_index in framedata['frames'][frame_name][frame_side] and 'theta' in framedata['frames'][frame_name][frame_side][frame_face_index]:
+            frame_name, frame_side, vr_frame_face_index, persp_frame_face_index = match.groups()
+            if frame_name in framedata['frames'] and frame_side in framedata['frames'][frame_name] and vr_frame_face_index in framedata['frames'][frame_name][frame_side] and persp_frame_face_index in framedata['frames'][frame_name][frame_side][vr_frame_face_index] and 'theta' in framedata['frames'][frame_name][frame_side][vr_frame_face_index][persp_frame_face_index]:
                 if frame_name not in framedata_update['frames']:
                     framedata_update['frames'][frame_name] = {}
                 if frame_side not in framedata_update['frames'][frame_name]:
                     framedata_update['frames'][frame_name][frame_side] = {}
-                if frame_face_index not in framedata_update['frames'][frame_name][frame_side]:
-                    framedata_update['frames'][frame_name][frame_side][frame_face_index] = {}
-                framedata_update['frames'][frame_name][frame_side][frame_face_index]['path'] = jpg.as_posix()
+                if vr_frame_face_index not in framedata_update['frames'][frame_name][frame_side]:
+                    framedata_update['frames'][frame_name][frame_side][vr_frame_face_index] = {}
+                if persp_frame_face_index not in framedata_update['frames'][frame_name][frame_side][vr_frame_face_index]:
+                    framedata_update['frames'][frame_name][frame_side][vr_frame_face_index][persp_frame_face_index] = {}
+                framedata_update['frames'][frame_name][frame_side][vr_frame_face_index][persp_frame_face_index]['path'] = jpg.as_posix()
             else:
                 logging.warning(f'File {jpg.name} has no corresponding data in _data.json, cannot merge')
         else:
@@ -346,6 +340,7 @@ if __name__ == '__main__':
     # logging.debug(json.dumps(framedata, indent=1))
 
     # now collect the list of source frames, and compile the list of frames to process based on whether if we have an entry in framedata['frames'] for that frame
+    # TODO: generate a separate list of frames that have a path associated with them. currently it still parses the framedata for frames with no jpg
     frames = []
     vr_frame_paths = list(Path(frames_path).glob('[0-9]*[0-9].jpg'))
     for frame_path in vr_frame_paths:
